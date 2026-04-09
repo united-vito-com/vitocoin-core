@@ -525,6 +525,38 @@ class Blockchain:
             log.info(f"📦  Orphan block {block.hash[:16]}… (missing parent)")
             return False, "Orphan"
 
+    # ── Mining concentration guard (F-04) ─────────────────────────────
+    _CONCENTRATION_WINDOW = 50   # look back over last N blocks
+    _CONCENTRATION_THRESHOLD = 0.50  # warn if one miner controls >= 50%
+
+    def _check_mining_concentration(self) -> None:
+        """Warn if a single address controls >= 50% of recent coinbase rewards."""
+        window = min(len(self.chain), self._CONCENTRATION_WINDOW)
+        if window < 6:
+            return
+        recent = self.chain[-window:]
+        addr_counts: dict = {}
+        for blk in recent:
+            if blk.transactions:
+                cb = blk.transactions[0]
+                if cb.outputs:
+                    # Extract coinbase recipient from P2PKH script
+                    sp = cb.outputs[0].script_pubkey
+                    if len(sp) == 25 and sp[0:3] == bytes([0x76, 0xa9, 0x14]):
+                        from vitocoin.crypto import base58check_encode
+                        addr = base58check_encode(bytes([0x46]), sp[3:23])
+                        addr_counts[addr] = addr_counts.get(addr, 0) + 1
+        if not addr_counts:
+            return
+        top_addr, top_count = max(addr_counts.items(), key=lambda x: x[1])
+        ratio = top_count / window
+        if ratio >= self._CONCENTRATION_THRESHOLD:
+            log.warning(
+                "⚠️  51%% RISK: %s controls %d/%d (%.0f%%) of last %d blocks — "
+                "encourage external miners to join via Stratum port 3333",
+                top_addr[:20] + "…", top_count, window, ratio * 100, window,
+            )
+
     def _validate_header(self, block: Block) -> Tuple[bool, str]:
         h = block.hash
 
@@ -727,6 +759,9 @@ class Blockchain:
             block.height, block.hash[:16], block.tx_count, block.header.difficulty,
         )
 
+
+        # 51% concentration check (F-04)
+        self._check_mining_concentration()
 
         # Notify block listeners
         for _cb in list(self.block_listeners):
