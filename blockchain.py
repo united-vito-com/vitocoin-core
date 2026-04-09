@@ -331,6 +331,9 @@ class Blockchain:
         self._block_prop_times: list   = []     # list of float ms
         self._tx_prop_times:    list   = []     # list of float ms
         self._PROP_WINDOW       = 100
+        # Block-acceptance callbacks: each callable receives (block)
+        # after it is connected to the main chain.
+        self.block_listeners: list = []
 
         os.makedirs(self.data_dir, exist_ok=True)
         # Open persistent store (LevelDB primary, SQLite fallback)
@@ -724,6 +727,13 @@ class Blockchain:
             block.height, block.hash[:16], block.tx_count, block.header.difficulty,
         )
 
+
+        # Notify block listeners
+        for _cb in list(self.block_listeners):
+            try:
+                _cb(block)
+            except Exception as _e:
+                log.warning("block_listener error: %s", _e)
     def _reorganize(self, new_tip: Block) -> bool:
         """
         Full chain reorganization to a longer fork.

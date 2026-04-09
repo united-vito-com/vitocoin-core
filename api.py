@@ -122,6 +122,12 @@ from vitocoin.transaction import Transaction, TxInput, TxOutput, COIN
 from vitocoin.miner import Miner, getblocktemplate
 from vitocoin.network import P2PNode
 from vitocoin.merchant import MerchantEngine, PaymentStatus
+try:
+    from vitocoin.webhooks import WebhookManager, register_subscription, list_subscriptions, get_payment_history
+    _WEBHOOKS_AVAILABLE = True
+except ImportError:
+    _WEBHOOKS_AVAILABLE = False
+    WebhookManager = None
 
 log = logging.getLogger("VitoCoin.api")
 
@@ -872,6 +878,19 @@ class VitoCoinAPI(BaseHTTPRequestHandler):
                 "ts":                 ts,
             }
 
+        # ── /v1/merchants/status/<address> ────────────────────────────
+        if parts[:2] == ["v1", "merchants"] and len(parts) >= 3 and parts[2] == "status":
+            if not _WEBHOOKS_AVAILABLE:
+                return {"error": "Webhook module not available"}
+            addr = parts[3] if len(parts) > 3 else ""
+            if not addr:
+                raise ValueError("Address required: /v1/merchants/status/<address>")
+            return {
+                "address": addr,
+                "subscriptions": list_subscriptions(addr),
+                "payments": get_payment_history(addr),
+            }
+
         # ── /merchant routes ─────────────────────────────────────────
         merchant = self._merchant
         if parts and parts[0] == "merchant":
@@ -1060,6 +1079,21 @@ class VitoCoinAPI(BaseHTTPRequestHandler):
             ok = p2p.connect(host, port)
             return {"connected": ok, "peer": f"{host}:{port}"}
 
+        # ── POST /v1/merchants/register ───────────────────────────────
+        if parts == ["v1", "merchants", "register"]:
+            if not _WEBHOOKS_AVAILABLE:
+                return {"error": "Webhook module not available"}
+            if not isinstance(data, dict):
+                raise ValueError("Request body must be a JSON object")
+            address = str(data.get("address", "")).strip()
+            url     = str(data.get("url", "")).strip()
+            secret  = data.get("secret") or None
+            if not address or not address.startswith("V"):
+                raise ValueError("'address' must be a valid VitoCoin address")
+            if not url or not (url.startswith("http://") or url.startswith("https://")):
+                raise ValueError("'url' must be a valid http/https URL")
+            return register_subscription(address, url, secret)
+
         # ── POST /merchant routes ─────────────────────────────────────
         if parts and parts[0] == "merchant":
             merchant = self._merchant
@@ -1246,6 +1280,7 @@ class VitoCoinHTTPServer(HTTPServer):
         self.app_rate_limiter = RateLimiter()
         self.app_api_keys     = api_keys or set()
         self.app_merchant     = merchant
+        self.app_webhook_mgr  = None   # set by caller after construction
         # Serve the wallet/ static files from alongside node.py
         _root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         self.app_static_dir = os.path.join(_root, "wallet")
